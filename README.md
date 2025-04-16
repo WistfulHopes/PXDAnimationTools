@@ -1,4 +1,4 @@
-# Frontiers Animation Tools
+# PXD Animation Tools
 Blender addon for importing and exporting compressed Hedgehog Engine 2 animations (.anm.pxd)
 
 ## Features:
