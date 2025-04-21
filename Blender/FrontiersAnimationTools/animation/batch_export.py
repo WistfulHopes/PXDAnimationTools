@@ -13,7 +13,7 @@ from .console_output import BatchProgress
 class FrontiersAnimBatchExport(bpy.types.Operator, ExportHelper):
     bl_idname = "export_anim.frontiers_anim_batch"
     bl_label = "Export"
-    bl_description = "Batch exports compressed Sonic Frontiers animations"
+    bl_description = "Batch exports compressed Hedgehog Engine 2 animations"
     bl_options = {'PRESET', 'UNDO'}
     filename_ext = ""
 
@@ -22,8 +22,8 @@ class FrontiersAnimBatchExport(bpy.types.Operator, ExportHelper):
 
     bool_yx_skel:   BoolProperty(
         name="Use YX Bone Orientation",
-        description="Enable if your skeleton was reoriented for Blender's YX orientation instead of Frontiers' XZ",
-        default=False,
+        description="Enable if your skeleton was reoriented for Blender's YX orientation instead of HE2's XZ",
+        default=True,
     )
 
     bool_start_zero: BoolProperty(
@@ -35,7 +35,8 @@ class FrontiersAnimBatchExport(bpy.types.Operator, ExportHelper):
         default=False,
     )
 
-    def __init__(self):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.bool_root_motion = False
         self.bool_compress = True
         self.bool_additive = False

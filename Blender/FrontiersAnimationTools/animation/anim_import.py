@@ -205,11 +205,11 @@ class PXDAnimParam:
 class FrontiersAnimImport(bpy.types.Operator, ImportHelper):
     bl_idname = "import_anim.frontiers_anim"
     bl_label = "Import"
-    bl_description = "Imports compressed Sonic Frontiers animation"
+    bl_description = "Imports compressed Hedgehog Engine 2 PXD animation"
     bl_options = {'PRESET', 'UNDO'}
-    filename_ext = ".pxd"
+    filename_ext = ".anm.pxd"
     filter_glob: StringProperty(
-        default="*.pxd",
+        default="*.anm.pxd",
         options={'HIDDEN'},
     )
     filepath: StringProperty(subtype='FILE_PATH', )
@@ -217,8 +217,8 @@ class FrontiersAnimImport(bpy.types.Operator, ImportHelper):
 
     bool_yx_skel: BoolProperty(
         name="Use YX Bone Orientation",
-        description="Enable if your skeleton was reoriented for Blender's YX orientation instead of Frontiers' XZ",
-        default=False,
+        description="Enable if your skeleton was reoriented for Blender's YX orientation instead of HE2's XZ",
+        default=True,
     )
 
     bool_root_motion: BoolProperty(
@@ -246,7 +246,8 @@ class FrontiersAnimImport(bpy.types.Operator, ImportHelper):
         default="loop_no",
     )
 
-    def __init__(self):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
         self.bool_skel_conv = False
         self.keyframe_rules = set()
         self.frame_count_loop = 0
@@ -608,6 +609,6 @@ class FrontiersAnimImport(bpy.types.Operator, ImportHelper):
     def menu_func_import(self, context):
         self.layout.operator(
             FrontiersAnimImport.bl_idname,
-            text="Frontiers Compressed Animation (.anm.pxd)",
+            text="Hedgehog Engine 2 Animation (.anm.pxd)",
             icon='ACTION',
         )

@@ -185,7 +185,7 @@ def anim_export(self_pass, filepath, arm_active, action_active, start_frame, end
 class FrontiersAnimExport(bpy.types.Operator, ExportHelper):
     bl_idname = "export_anim.frontiers_anim"
     bl_label = "Export"
-    bl_description = "Exports compressed Sonic Frontiers animation"
+    bl_description = "Exports compressed Hedgehog Engine 2 PXD animation"
     bl_options = {'PRESET', 'UNDO'}
     filename_ext = ".pxd"
     filter_glob: StringProperty(
@@ -197,8 +197,8 @@ class FrontiersAnimExport(bpy.types.Operator, ExportHelper):
 
     bool_yx_skel: BoolProperty(
         name="Use YX Bone Orientation",
-        description="Enable if your skeleton was reoriented for Blender's YX orientation instead of Frontiers' XZ",
-        default=False,
+        description="Enable if your skeleton was reoriented for Blender's YX orientation instead of HE2's XZ",
+        default=True,
     )
 
     bool_root_motion: BoolProperty(
@@ -290,7 +290,7 @@ class FrontiersAnimExport(bpy.types.Operator, ExportHelper):
     def menu_func_export(self, context):
         self.layout.operator(
             FrontiersAnimExport.bl_idname,
-            text="Frontiers Compressed Animation (.anm.pxd)",
+            text="Hedgehog Engine 2 Animation (.anm.pxd)",
             icon='ACTION'
         )
 

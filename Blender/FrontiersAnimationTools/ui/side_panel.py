@@ -15,7 +15,7 @@ from .func_ops import (MakeFrontiersActionActive,
 
 
 class FrontiersAnimationPanel(bpy.types.Panel):
-    bl_label = "Frontiers Animation"
+    bl_label = "PXD Animation Tools"
     bl_idname = "OBJECT_PT_frontiers_tools"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'

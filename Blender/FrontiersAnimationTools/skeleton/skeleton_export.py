@@ -69,7 +69,7 @@ class HedgehogSkeletonExport(bpy.types.Operator, ExportHelper):
     use_yx_orientation: BoolProperty(
         name="Convert from YX Bone Orientation",
         description="If your skeleton was imported from XZ to YX to function better in Blender, use this option to switch bones back from YX to XZ (important for in-game IK)",
-        default=False,
+        default=True,
     )
 
     def draw(self, context):

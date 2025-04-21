@@ -20,9 +20,9 @@ class HedgehogSkeletonImport(bpy.types.Operator, ImportHelper):
     bl_label = "Import"
     bl_description = "Imports PXD skeleton from Hedgehog Engine 2 games"
     bl_options = {'PRESET', 'UNDO'}
-    filename_ext = ".pxd"
+    filename_ext = ".skl.pxd"
     filter_glob: StringProperty(
-        default="*.pxd",
+        default="*.skl.pxd",
         options={'HIDDEN'},
     )
     filepath: StringProperty(subtype='FILE_PATH', )
@@ -31,7 +31,7 @@ class HedgehogSkeletonImport(bpy.types.Operator, ImportHelper):
     use_yx_orientation: BoolProperty(
         name="Convert to YX Bone Orientation",
         description="Reorient bones from XZ to YX to make bones coincide with limbs and enable mirror support",
-        default=False,
+        default=True,
     )
 
     get_bone_lengths: BoolProperty(
