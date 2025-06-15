@@ -51,9 +51,14 @@ def anim_export(self_pass, filepath, arm_active, action_active, start_frame, end
         scale_map_temp = {}
         for pbone in arm_active.pose.bones:
             tmp_loc, tmp_rot, tmp_scale = pbone.matrix.decompose()
+            # Matrix scales necessary to obtain local scales resulting from constraints
+            if pbone.parent:
+                parent_scale = pbone.parent.matrix.to_scale()
+                tmp_scale = mathutils.Vector((tmp_scale.x / parent_scale.x, tmp_scale.y / parent_scale.y, tmp_scale.z / parent_scale.z))
+
             tmp_matrix = mathutils.Matrix.LocRotScale(tmp_loc, tmp_rot, mathutils.Vector((1.0, 1.0, 1.0)))
             matrix_map_temp.update({pbone.name: tmp_matrix})
-            scale_map_temp.update({pbone.name: pbone.scale.copy()})  # normal scale is different from matrix scale
+            scale_map_temp.update({pbone.name: tmp_scale})
 
         # Negate unscaled parent matrices, write to buffer with actual scales
         for pbone in arm_active.pose.bones:
@@ -64,7 +69,7 @@ def anim_export(self_pass, filepath, arm_active, action_active, start_frame, end
                 tmp_parent_matrix = mathutils.Matrix()
                 tmp_bone_length = 0.0
             tmp_matrix = tmp_parent_matrix.inverted() @ matrix_map_temp[pbone.name]
-            tmp_loc, tmp_rot, tmp_scale = tmp_matrix.decompose()
+            tmp_loc, tmp_rot, _ = tmp_matrix.decompose()
             tmp_scale = scale_map_temp[pbone.name]
 
             if self_pass.bool_yx_skel:

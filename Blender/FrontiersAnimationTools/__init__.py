@@ -14,7 +14,7 @@ from .ui import side_panel
 bl_info = {
     "name": "Hedgehog Engine PXD Animation Tools",
     "author": "AdelQ, WistfulHopes, Turk645",
-    "version": (2, 1, 3),
+    "version": (2, 1, 4),
     "blender": (4, 1, 0),
     "location": "File > Import/Export",
     "description": "Animation and skeleton importer/exporter for Hedgehog Engine 2 games with compressed animations",
