@@ -1,11 +1,15 @@
 import bpy
 import mathutils
 import math
-import struct
 import os
 import io
 import time
+import numpy as np
+from struct import unpack
 from bpy_extras.io_utils import ImportHelper
+from mathutils import (Quaternion,
+                       Matrix,
+                       Vector)
 from bpy.props import (BoolProperty,
                        StringProperty,
                        EnumProperty,
@@ -14,88 +18,261 @@ from bpy.props import (BoolProperty,
 from ..FrontiersAnimDecompress.process_buffer import decompress
 from .console_output import BatchProgress
 
-RMS = 1 / math.sqrt(2)
+SINE_RMS = 1 / math.sqrt(2)
+ROOT_OBJ_ROTATE = mathutils.Quaternion((SINE_RMS, SINE_RMS, 0.0, 0.0))
+ROOT_BONE_ROTATE = mathutils.Quaternion((0.5, -0.5, -0.5, -0.5))
 
-# Convert to global matrix with locations being unaffected by scale
-def get_matrix_map_global(obj, matrix_map_local, scale_map):
-    # Get global matrix of raw bone tracks, which are relative to parent track's local space.
-    # Location is assumed to be unaffected by scale. Parent bone scaling in Blender affects locations
-    # of child bones, so final position and rotation matrices must be calculated without scale first.
-    matrix_map_global = {}
-    for pbone in obj.pose.bones:
-        matrix = mathutils.Matrix()
-        scale = scale_map[pbone.name].copy()
+class ArmatureData:
+    def __init__(self, arm_obj):
+        self.object = arm_obj
+        self.pose_bones = arm_obj.pose.bones
+        self.bone = self.pose_bones[0].bone
+        self.bone_names = [pbone.name for pbone in self.pose_bones]
+        self.bone_count = len(self.pose_bones)
+        self.local_matrices = {pbone.name: pbone.bone.matrix_local for pbone in self.pose_bones}
 
-        # Get final transform matrix and scale separately
-        for parent_bone in reversed(pbone.parent_recursive):
-            if parent_bone.name in matrix_map_local:
-                matrix @= matrix_map_local[parent_bone.name]
-                scale *= scale_map[parent_bone.name]
-        matrix @= matrix_map_local[pbone.name]
+        self.bone_parents = {}
+        for pbone in self.pose_bones:
+            if pbone.parent:
+                self.bone_parents[pbone.name] = pbone.parent.name
+            else:
+                self.bone_parents[pbone.name] = None
 
-        # Substitute proper scale in matrix with unscaled bone transform
-        tmp_loc, tmp_rot, tmp_scale = matrix.decompose()
-        matrix = mathutils.Matrix.LocRotScale(tmp_loc, tmp_rot, scale)
-        matrix_map_global.update({pbone.name: matrix})
+        self.bone_children = {}
+        for pbone in self.pose_bones:
+            children = []
+            if pbone.children:
+                children = [child.name for child in pbone.children]
+            self.bone_children[pbone.name] = children
+
+        self.bone_paths = {}
+        for pbone in self.pose_bones:
+            path_loc = pbone.path_from_id("location")
+            path_rot = pbone.path_from_id("rotation_quaternion")
+            path_scl = pbone.path_from_id("scale")
+            self.bone_paths[pbone.name] = [path_loc, path_rot, path_scl]
+
+    def prepare_settings(self):
+        self.object.rotation_mode = 'QUATERNION'
+        for pbone in self.pose_bones:
+            pbone.bone.inherit_scale = 'ALIGNED'
+            pbone.rotation_mode = 'QUATERNION'
+
+
+class ActionData:
+    def __init__(self, arm_data: ArmatureData, action_name):
+        self.arm_data = arm_data
+        self.object = arm_data.object
+        self.object.animation_data_create()
+        self.action_name =action_name
+        self.action = bpy.data.actions.new(action_name)
+        self.action.use_frame_range = True
+        self.fcurves = {}
+        self.fcurves_root = None
+        self.fc_container = self.get_fc_container(self.action)
+
+        for name in arm_data.bone_names:
+            path_loc, path_rot, path_scl = arm_data.bone_paths[name]
+
+            fc_loc = [self.fc_container.fcurves.new(path_loc, index=i_loc) for i_loc in range(3)]
+            fc_rot = [self.fc_container.fcurves.new(path_rot, index=i_rot) for i_rot in range(4)]
+            fc_scl = [self.fc_container.fcurves.new(path_scl, index=i_scl) for i_scl in range(3)]
+
+            for fc in fc_loc + fc_scl:
+                fc.color_mode = 'AUTO_RGB'
+
+            for fc in fc_rot:
+                fc.color_mode = 'AUTO_YRGB'
+
+            self.fcurves[name] = [fc_loc, fc_rot, fc_scl]
+
+        self.object.animation_data.action = self.action
+
+    def make_root_curves(self):
+        fc_loc = [self.fc_container.fcurves.ensure("location", index=i_loc) for i_loc in range(3)]
+        fc_rot = [self.fc_container.fcurves.ensure("rotation_quaternion", index=i_rot) for i_rot in range(4)]
+        fc_scl = [self.fc_container.fcurves.ensure("scale", index=i_scl) for i_scl in range(3)]
+
+        for fc in fc_loc + fc_scl:
+            fc.color_mode = 'AUTO_RGB'
+
+        for fc in fc_rot:
+            fc.color_mode = 'AUTO_YRGB'
+
+        self.fcurves_root = [fc_loc, fc_rot, fc_scl]
+
+    def get_fc_container(self, action):
+        if is_version_at_least(4,5):
+            layer = action.layers.new("Layer")
+            slot = action.slots.new(id_type='OBJECT', name=f"{self.object.name}")
+            strip = layer.strips.new(type='KEYFRAME')
+            channelbag = strip.channelbag(slot, ensure=True)
+            return channelbag
+        else:
+            return action
+
+    def add_kps_uncompressed(bone_point_counts={}): # TODO
+        pass
+        # for name in arm_data.bone_names:
+        #     fc_loc, fc_rot, fc_scl = fcurves[name]
+        #     num_loc, num_rot, num_scl = bone_point_counts[name]
+        # [fc.keyframe_points.add(count=num_loc) for fc in fc_loc]
+        # [fc.keyframe_points.add(count=num_rot) for fc in fc_rot]
+        # [fc.keyframe_points.add(count=num_scl) for fc in fc_scl]
+
+
+
+    def create_np_array(self, track_count, frame_count, is_quat=False):
+        # if is_quat:
+        #     channels = 4
+        # else:
+        #     channels = 3
+        # return np.empty((track_count, channels, frame_count*2), dtype=np.float32)
+        pass
+
+    def update_np_arrays(self, arm_data: ArmatureData, matrix_map_basis, frame):
+        # frame_f = float(frame)
+        # np_frame_i  = frame*2
+        # np_val_i = np_frame_i+1
+        #
+        # for i in range(arm_data.bone_count):
+        #     name = arm_data.bone_names[i]
+        #     matrix = matrix_map_basis[name]
+        #     loc, rot, scl = matrix.decompose()
+        #
+        #     for j, val in enumerate(loc):
+        #         np_loc[i][j][np_frame_i] = frame_f
+        #         np_loc[i][j][np_val_i] = val
+        #
+        #     for j, val in enumerate(rot):
+        #         np_rot[i][j][np_frame_i] = frame_f
+        #         np_rot[i][j][np_val_i] = val
+        #
+        #     for j, val in enumerate(scl):
+        #         np_scl[i][j][np_frame_i] = frame_f
+        #         np_scl[i][j][np_val_i] = val
+        pass
+
+    def add_kps_compressed(self, count):
+        [fc.keyframe_points.add(count=count) for fc in self.fc_container.fcurves]
+
+    def update_curves(self):
+        [fc.update() for fc in self.fc_container.fcurves]
+
+    def make_points_linear(self):
+        for fc in self.fc_container.fcurves:
+            for kp in fc.keyframe_points:
+                kp.interpolation = 'LINEAR'
+
+
+def is_version_at_least(major, minor):
+    if bpy.app.version[0] > major:
+        return True
+    elif bpy.app.version[0] == major and bpy.app.version[1] >= minor:
+        return True
+    return False
+
+
+# Get global matrix of raw bone tracks, which are relative to parent track's local space.
+# In HE2, scales are inhereted from parents, but locations are not, unlike Blender where scale
+# affects locations. We calculate the global location and rotation matrices by multiplying the
+# local matrices from the root to the current bone, then insert the final scale at the end.
+def get_matrix_map_global(arm_data: ArmatureData, matrix_map_local, scale_map):
+    bone_names = arm_data.bone_names
+    bone_parents = arm_data.bone_parents
+    bone_children = arm_data.bone_children
+
+    matrix_map_global = {name:mathutils.Matrix() for name in bone_names}
+
+    # Recursively multiply matrices (and scales) leading up to each bone
+    def rec(name, parent_name):
+
+        matrix = matrix_map_global[name]
+        if parent_name:
+            matrix @= matrix_map_global[parent_name]
+            scale_map[name] *= scale_map[parent_name]
+
+        matrix @= matrix_map_local[name]
+
+        if bone_children[name]:
+            for child in bone_children[name]:
+                rec(child, name)
+
+    for name in bone_names:
+        if not bone_parents[name]:
+            rec(name, None)
+
+    # Then finally apply scales, as all locations are now final
+    for name in bone_names:
+        matrix = matrix_map_global[name]
+        scale = scale_map[name]
+        matrix @= mathutils.Matrix.Diagonal(scale).to_4x4()
+
     return matrix_map_global
 
 
-# Convert back to local space without scene update
-def set_pose_matrices_global(obj, matrix_map_global, frame, keyframe_rules=None, truth_table=None, is_compressed=False):
-    # Update global positions without needing bpy.context.view_layer.update() based on example in Blender docs:
+# Once global matrices of all bones are obtained, we can now go back and recalculate
+# the pose bone's matrix_basis, which will be its local transforms as a matrix. Constructing
+# this
+
+def get_matrix_map_basis(arm_data: ArmatureData,matrix_map_global,frame,truth_table=None,is_compressed=False):
+
+    bone_names = arm_data.bone_names
+    bone_parents = arm_data.bone_parents
+    bone_children = arm_data.bone_children
+    local_matrices = arm_data.local_matrices
+    bone = arm_data.bone
+    matrix_map_basis = {}
+
+    # Calculate local matrices from global
+    # Based on example in Blender docs:
     # https://docs.blender.org/api/current/bpy.types.Bone.html#bpy.types.Bone.convert_local_to_pose
+    def rec(name, parent_matrix):
+        parent_name = bone_parents[name]
+        matrix_local = local_matrices[name]
+        if bone_parents[name]:
+            parent_matrix_local = local_matrices[parent_name]
 
-    if not keyframe_rules:
-        keyframe_rules = set()
-
-    def rec(pbone, parent_matrix):
-        if pbone.name in matrix_map_global:
+        if name in matrix_map_global:
             # Compute and assign local matrix, using the new parent matrix
-            matrix = matrix_map_global[pbone.name].copy()
-            if pbone.parent:
-                pbone.matrix_basis = pbone.bone.convert_local_to_pose(matrix,
-                                                                      pbone.bone.matrix_local,
-                                                                      parent_matrix=parent_matrix,
-                                                                      parent_matrix_local=pbone.parent.bone.matrix_local,
-                                                                      invert=True)
-            else:
-                pbone.matrix_basis = pbone.bone.convert_local_to_pose(matrix,
-                                                                      pbone.bone.matrix_local,
-                                                                      invert=True)
+            matrix = matrix_map_global[name]
+            if bone_parents[name]:
+                matrix_out = bone.convert_local_to_pose( matrix,
+                                              matrix_local,
+                                              parent_matrix=parent_matrix,
+                                              parent_matrix_local=parent_matrix_local,
+                                              invert=True )
 
+            else:
+                matrix_out = bone.convert_local_to_pose( matrix,
+                                                      matrix_local,
+                                                      invert=True)
+
+        # If a keyframe isn't present
         else:
             # Compute the updated pose matrix from local and new parent matrix
-            if pbone.parent:
-                matrix = pbone.bone.convert_local_to_pose(pbone.matrix_basis,
-                                                          pbone.bone.matrix_local,
+            matrix_basis = bone_stuff.pbones[name].matrix_basis
+            if bone_parents[name]:
+                matrix = bone.convert_local_to_pose(matrix_basis,
+                                                          matrix_local,
                                                           parent_matrix=parent_matrix,
-                                                          parent_matrix_local=pbone.parent.bone.matrix_local)
+                                                          parent_matrix_local=parent_matrix_local)
             else:
-                matrix = pbone.bone.convert_local_to_pose(pbone.matrix_basis, pbone.bone.matrix_local)
+                matrix = bone.convert_local_to_pose(matrix_basis, matrix_local)
 
-        if truth_table and not is_compressed:
-            bone_key = truth_table[pbone.name]
-            if bone_key[0]:
-                pbone.keyframe_insert('location', frame=frame, options=keyframe_rules)
-            if bone_key[1]:
-                pbone.keyframe_insert('rotation_quaternion', frame=frame, options=keyframe_rules)
-            if bone_key[2]:
-                pbone.keyframe_insert('scale', frame=frame, options=keyframe_rules)
-        else:
-
-            pbone.keyframe_insert('location', frame=frame, options=keyframe_rules)
-            pbone.keyframe_insert('rotation_quaternion', frame=frame, options=keyframe_rules)
-            pbone.keyframe_insert('scale', frame=frame, options=keyframe_rules)
+        matrix_map_basis[name] = matrix_out
 
         # Recursively process children, passing the new matrix through
-        for child in pbone.children:
-            rec(child, matrix)
+        if bone_children[name]:
+            for child in bone_children[name]:
+                rec(child, matrix)
 
     # Scan all bone trees from their roots
-    for pbone in obj.pose.bones:
-        if not pbone.parent:
-            rec(pbone, None)
+    for name in bone_names:
+        if not bone_parents[name]:
+            rec(name, None)
 
+    return matrix_map_basis
 
 # Parse keyframes into nested list for uncompressed animations
 def get_uncompressed_frame_table(anim_file, frame_count, track_count, table_offset):
@@ -127,29 +304,32 @@ def get_uncompressed_frame_table(anim_file, frame_count, track_count, table_offs
             anim_file.seek(loc_frame_offset + 0x2 * i)
             tmp_frame = int.from_bytes(anim_file.read(2), byteorder='little')
             anim_file.seek(loc_data_offset + 0x10 * i)
-            tmp_loc = struct.unpack('<fff', anim_file.read(0xC))
+            tmp_loc = unpack('<fff', anim_file.read(0xC))
             frame_table[tmp_frame][track][0] = tmp_loc
 
         for i in range(rot_count):
             anim_file.seek(rot_frame_offset + 0x2 * i)
             tmp_frame = int.from_bytes(anim_file.read(2), byteorder='little')
             anim_file.seek(rot_data_offset + 0x10 * i)
-            tmp_rot = struct.unpack('<ffff', anim_file.read(0x10))
+            tmp_rot = unpack('<ffff', anim_file.read(0x10))
             frame_table[tmp_frame][track][1] = tmp_rot
 
         for i in range(scale_count):
             anim_file.seek(scale_frame_offset + 0x2 * i)
             tmp_frame = int.from_bytes(anim_file.read(2), byteorder='little')
             anim_file.seek(scale_data_offset + 0x10 * i)
-            tmp_scale = struct.unpack('<fff', anim_file.read(0xC))
+            tmp_scale = unpack('<fff', anim_file.read(0xC))
             frame_table[tmp_frame][track][2] = tmp_scale
 
     return frame_table
 
 
 class PXDAnimParam:
-    def __init__(self, file):
-        self.name = str()
+    def __init__(self, file, name):
+        self.name = name
+        for ext in [".outanim", ".anm", ".pxd"]:
+            self.name = self.name.replace(ext, "")
+
         file.seek(8)
         file_size = int.from_bytes(file.read(4), byteorder='little')
 
@@ -176,7 +356,7 @@ class PXDAnimParam:
             self.is_compressed = False
 
         file.seek(0x58)
-        self.duration = struct.unpack('<f', file.read(4))[0]
+        self.duration = unpack('<f', file.read(4))[0]
         self.frame_count = int.from_bytes(file.read(4), byteorder='little')
         if self.duration != 0.0:
             self.frame_rate = (self.frame_count - 1) / self.duration
@@ -248,7 +428,6 @@ class FrontiersAnimImport(bpy.types.Operator, ImportHelper):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.bool_skel_conv = False
-        self.keyframe_rules = set()
         self.frame_count_loop = 0
         self.pad_loop = False
 
@@ -294,10 +473,8 @@ class FrontiersAnimImport(bpy.types.Operator, ImportHelper):
             self.report({'INFO'}, f"Active object \"{arm_active.name}\" is not an armature. Please select an armature.")
             return {'CANCELLED'}
 
-        arm_active.rotation_mode = 'QUATERNION'
-        bone_count = len(arm_active.pose.bones)
-        for bone in arm_active.data.bones:
-            bone.inherit_scale = 'ALIGNED'
+        arm_data = ArmatureData(arm_active)
+        arm_data.prepare_settings()
 
         # Status logging
         self.progress = BatchProgress(self, num_items=len(self.files), method='IMPORT')
@@ -305,7 +482,11 @@ class FrontiersAnimImport(bpy.types.Operator, ImportHelper):
         for f, file in enumerate(self.files):
             # Begin import
             anim_file = open(os.path.join(os.path.dirname(self.filepath), file.name), "rb")
-            anim_param = PXDAnimParam(anim_file)
+            anim_param = PXDAnimParam(anim_file, file.name)
+            if not anim_param.is_compressed:    # TODO
+                self.progress.update_error(error=f"{file.name} compressed animation import is currently broken. File skipped. Sorry! :(")
+                continue
+
             self.progress.update_frame_count(anim_param.frame_count)
             self.progress.resume(frame_num=-1, name=file.name, item_num=f)
 
@@ -320,29 +501,20 @@ class FrontiersAnimImport(bpy.types.Operator, ImportHelper):
             else:
                 scene_active.render.fps_base = 1.0
 
-            if bone_count != anim_param.track_count:
+            if arm_data.bone_count != anim_param.track_count:
                 self.report(
                     {'WARNING'},
-                    f"Bone count of \"{arm_active.data.name}\" ({bone_count}) does not match track count of \"{file.name}\" ({anim_param.track_count}). Results may not turn out as expected."
+                    f"Bone count of \"{arm_active.data.name}\" ({arm_data.bone_count}) does not match track count of \"{file.name}\" ({anim_param.track_count}). Results may not turn out as expected."
                 )
 
-            anim_name = file.name
-            for ext in [".outanim", ".anm", ".pxd"]:
-                anim_name = anim_name.replace(ext, "")
-            anim_param.name = anim_name
-            arm_active.animation_data_create()
-            action_active = bpy.data.actions.new(anim_name)
-            arm_active.animation_data.action = action_active
-            action_active.use_frame_range = True
+            action_data = ActionData(arm_data, anim_param.name)
+            action_active = action_data.action
 
-            self.keyframe_rules = set()
-
-            if self.enum_loop_check == "loop_yes" or (self.enum_loop_check == "loop_auto" and "_loop" in anim_name):
+            if self.enum_loop_check == "loop_yes" or (self.enum_loop_check == "loop_auto" and "_loop" in anim_param.name):
                 self.pad_loop = True
 
             # frame_count_loop used ubiquitously in case of padding
             if self.pad_loop and anim_param.is_compressed:
-                self.keyframe_rules.add('INSERTKEY_CYCLE_AWARE')
                 self.frame_count_loop = 3 * (anim_param.frame_count - 1) + 1
                 # Weird Blender behavior requires this to be set later
                 # action_active.frame_start = anim_param.frame_count - 1
@@ -360,7 +532,7 @@ class FrontiersAnimImport(bpy.types.Operator, ImportHelper):
             action_active.pxd_additive = anim_param.is_additive
 
             if anim_param.is_compressed:
-                import_action = self.import_compressed(arm_active, anim_file, anim_param)
+                import_action = self.import_compressed(arm_data, action_data, anim_file, anim_param)
             else:
                 import_action = self.import_uncompressed(arm_active, anim_file, anim_param)
             anim_file.close()
@@ -369,39 +541,36 @@ class FrontiersAnimImport(bpy.types.Operator, ImportHelper):
                 self.progress.update_error(error=f"{file.name} compressed animation import couldn't be processed. File skipped.")
                 continue
 
-            if not anim_param.is_compressed:
-                if bpy.app.version[0] < 5:
-                    fcurves = action_active.fcurves
-                else:
-                    slot = arm_active.animation_data.action_slot
-                    strip = action_active.layers[0].strips[0]
-                    channelbag = strip.channelbag(slot)
-                    fcurves = channelbag.fcurves
-                for fc in fcurves:
-                    for kp in fc.keyframe_points:
-                        kp.interpolation = 'LINEAR'
-
             # Keyframes become invisible if this is set earlier than anim import.
             if self.pad_loop and anim_param.is_compressed:
                 scene_active.frame_start = action_active.frame_start = anim_param.frame_count - 1
                 scene_active.frame_end = action_active.frame_end = self.frame_count_loop - anim_param.frame_count
 
         self.progress.finish()
-
         return {'FINISHED'}
 
-    def import_compressed(self, arm_active, anim_file, anim_data):
+    def import_compressed(self,
+                          arm_data: ArmatureData,
+                          action_data: ActionData,
+                          anim_file,
+                          anim_data):
+
+        arm_active = arm_data.object
         frame_count = anim_data.frame_count
         track_count = anim_data.track_count
-        bone_count = len(arm_active.data.bones)
         main_offset = anim_data.main_offset
         root_offset = anim_data.root_offset
+        bone_names = arm_data.bone_names
+        bone_parents = arm_data.bone_parents
+        bone_count = arm_data.bone_count
+
 
         anim_file.seek(main_offset)
         main_buffer_length = int.from_bytes(anim_file.read(4), byteorder='little')
         anim_file.seek(main_offset)
         main_buffer_compressed = anim_file.read(main_buffer_length)
         main_buffer = decompress(main_buffer_compressed)
+
         if not len(main_buffer.getvalue()):
             self.progress.update_error(error=f"{anim_data.name} buffer failed to initialize. File skipped.")
             return False
@@ -421,13 +590,19 @@ class FrontiersAnimImport(bpy.types.Operator, ImportHelper):
             root_buffer = None
 
         # Nice for sanity check, but not necessary
-        duration_acl = struct.unpack('<f', main_buffer.read(0x4))[0]
-        frame_rate_acl = struct.unpack('<f', main_buffer.read(0x4))[0]
+        duration_acl = unpack('<f', main_buffer.read(0x4))[0]
+        frame_rate_acl = unpack('<f', main_buffer.read(0x4))[0]
         frame_count_acl = int.from_bytes(main_buffer.read(4), byteorder='little')
         track_count_acl = int.from_bytes(main_buffer.read(4), byteorder='little')
 
+        # +1 for potential root motion
+        np_loc = np.empty((track_count+1, 3, self.frame_count_loop*2), dtype=np.float32)
+        np_rot = np.empty((track_count+1, 4, self.frame_count_loop*2), dtype=np.float32)
+        np_scl = np.empty((track_count+1, 3, self.frame_count_loop*2), dtype=np.float32)
+        root_i = track_count
+
         for frame in range(self.frame_count_loop):
-            self.progress.resume(frame_num=frame)
+            # self.progress.resume(frame_num=frame)
             if self.pad_loop:
                 main_buffer.seek(0x10 + (0x30 * track_count * (frame % (frame_count - 1))))
             else:
@@ -437,25 +612,23 @@ class FrontiersAnimImport(bpy.types.Operator, ImportHelper):
             scale_map = {}
 
             for i in range(bone_count):
-                pbone = arm_active.pose.bones[i]
+                name = arm_data.bone_names[i]
                 if i in range(track_count):
-                    r0, r1, r2, r3 = struct.unpack('<ffff', main_buffer.read(0x10))
-                    p0, p1, p2 = struct.unpack('<fff', main_buffer.read(0xC))
-                    main_buffer.read(4)  # Float: Bone length
-                    s0, s1, s2 = struct.unpack('<fff', main_buffer.read(0xC))
-                    main_buffer.read(4)  # Float: 1.0
+                    r0, r1, r2, r3 = unpack('<ffff', main_buffer.read(0x10))
+                    p0, p1, p2, __ = unpack('<ffff', main_buffer.read(0x10))
+                    s0, s1, s2, __ = unpack('<ffff', main_buffer.read(0x10))
 
                     if self.bool_yx_skel:
                         tmp_rot = mathutils.Quaternion((r3, r2, r0, r1))
                         tmp_loc = mathutils.Vector((p2, p0, p1))
-                        if not pbone.parent:
-                            tmp_rot @= mathutils.Quaternion((0.5, -0.5, -0.5, -0.5))
+                        if not arm_data.bone_parents[name]:
+                            tmp_rot @= ROOT_BONE_ROTATE
                     else:
                         tmp_rot = mathutils.Quaternion((r3, r0, r1, r2))
                         tmp_loc = mathutils.Vector((p0, p1, p2))
 
-                    matrix = mathutils.Matrix.LocRotScale(tmp_loc, tmp_rot, mathutils.Vector((1.0, 1.0, 1.0)))
-                    matrix_map_local.update({pbone.name: matrix})
+                    matrix = mathutils.Matrix.LocRotScale(tmp_loc, tmp_rot, None)
+                    matrix_map_local[name] = matrix
 
                     if (s0, s1, s2) != (0.0, 0.0, 0.0):
                         if self.bool_yx_skel:
@@ -465,154 +638,200 @@ class FrontiersAnimImport(bpy.types.Operator, ImportHelper):
                     else:
                         tmp_scale = mathutils.Vector((1.0, 1.0, 1.0))
 
-                    scale_map.update({pbone.name: tmp_scale})
-                else:
-                    matrix_map_local.update({pbone.name: mathutils.Matrix()})
-                    scale_map.update({pbone.name: mathutils.Vector((1.0, 1.0, 1.0))})
+                    scale_map[name] = tmp_scale
 
-            matrix_map_global = get_matrix_map_global(arm_active, matrix_map_local, scale_map)
-            set_pose_matrices_global(arm_active, matrix_map_global, frame, keyframe_rules=self.keyframe_rules, is_compressed=True)
+                else:
+                    matrix_map_local[name] = mathutils.Matrix()
+                    scale_map[name] = mathutils.Vector((1.0, 1.0, 1.0))
+
+            matrix_map_global = get_matrix_map_global(arm_data, matrix_map_local, scale_map)
+            matrix_map_basis = get_matrix_map_basis(arm_data, matrix_map_global, frame, is_compressed=True)
+
+            frame_f = float(frame)
+            np_frame_i  = frame*2
+            np_val_i = np_frame_i+1
+            for i in range(track_count):
+                name = bone_names[i]
+                mat = matrix_map_basis[name]
+                loc, rot, scl = mat.decompose()
+
+                for j, val in enumerate(loc):
+                    np_loc[i][j][np_frame_i] = frame_f
+                    np_loc[i][j][np_val_i] = val
+
+                for j, val in enumerate(rot):
+                    np_rot[i][j][np_frame_i] = frame_f
+                    np_rot[i][j][np_val_i] = val
+
+                for j, val in enumerate(scl):
+                    np_scl[i][j][np_frame_i] = frame_f
+                    np_scl[i][j][np_val_i] = val
+
+            ### TODO ###
 
             if root_buffer:
+                action_data.make_root_curves()
+
                 if self.pad_loop:
                     root_buffer.seek(0x10 + (0x30 * (frame % (frame_count - 1))))
                 else:
                     root_buffer.seek(0x10 + (0x30 * frame))
 
-                r0, r1, r2, r3 = struct.unpack('<ffff', root_buffer.read(0x10))
-                p0, p1, p2 = struct.unpack('<fff', root_buffer.read(0xC))
-                root_buffer.read(4)  # Float: Bone length
-                s0, s1, s2 = struct.unpack('<fff', root_buffer.read(0xC))
-                root_buffer.read(4)  # Float: 1.0
+                r0, r1, r2, r3 = unpack('<ffff', root_buffer.read(0x10))
+                p0, p1, p2, __ = unpack('<ffff', root_buffer.read(0x10))
+                s0, s1, s2, __ = unpack('<ffff', root_buffer.read(0x10))
 
-                tmp_rot = mathutils.Quaternion((RMS, RMS, 0.0, 0.0))
-                tmp_rot @= mathutils.Quaternion((r3, r0, r1, r2))
-                tmp_loc = mathutils.Vector((p0, -p2, p1))
+                rot = ROOT_OBJ_ROTATE.copy()
+                rot @= mathutils.Quaternion((r3, r0, r1, r2))
+                loc = mathutils.Vector((p0, -p2, p1))
                 if (s0, s1, s2) != (0.0, 0.0, 0.0):
-                    tmp_scale = mathutils.Vector((s0, s1, s2))
+                    scl = mathutils.Vector((s0, s1, s2))
                 else:
-                    tmp_scale = mathutils.Vector((1.0, 1.0, 1.0))
+                    scl = mathutils.Vector((1.0, 1.0, 1.0))
 
-                arm_active.rotation_quaternion = tmp_rot
-                arm_active.location = tmp_loc
-                arm_active.scale = tmp_scale
+                for j, val in enumerate(loc):
+                    np_loc[root_i][j][np_frame_i] = frame_f
+                    np_loc[root_i][j][np_val_i] = val
 
-                arm_active.keyframe_insert('rotation_quaternion', frame=frame, options=self.keyframe_rules)
-                arm_active.keyframe_insert('location', frame=frame, options=self.keyframe_rules)
-                arm_active.keyframe_insert('scale', frame=frame, options=self.keyframe_rules)
+                for j, val in enumerate(rot):
+                    np_rot[root_i][j][np_frame_i] = frame_f
+                    np_rot[root_i][j][np_val_i] = val
+
+                for j, val in enumerate(scl):
+                    np_scl[root_i][j][np_frame_i] = frame_f
+                    np_scl[root_i][j][np_val_i] = val
 
             elif self.bool_root_motion and not root_buffer:
                 self.report({'INFO'}, "No root motion chunk found.")
+
+        action_data.add_kps_compressed(self.frame_count_loop)
+
+        for i in range(track_count):
+            name = bone_names[i]
+            fc_loc, fc_rot, fc_scl = action_data.fcurves[name]
+            [fc.keyframe_points.foreach_set('co', np_loc[i][j]) for j, fc in enumerate(fc_loc)]
+            [fc.keyframe_points.foreach_set('co', np_rot[i][j]) for j, fc in enumerate(fc_rot)]
+            [fc.keyframe_points.foreach_set('co', np_scl[i][j]) for j, fc in enumerate(fc_scl)]
+
+        if action_data.fcurves_root:
+            fc_loc, fc_rot, fc_scl = action_data.fcurves_root
+            [fc.keyframe_points.foreach_set('co', np_loc[root_i][j]) for j, fc in enumerate(fc_loc)]
+            [fc.keyframe_points.foreach_set('co', np_rot[root_i][j]) for j, fc in enumerate(fc_rot)]
+            [fc.keyframe_points.foreach_set('co', np_scl[root_i][j]) for j, fc in enumerate(fc_scl)]
+
+        action_data.update_curves()
+
         return True
 
-    def import_uncompressed(self, arm_active, anim_file, anim_data):
-        frame_count = anim_data.frame_count
-        track_count = anim_data.track_count
-        bone_count = len(arm_active.data.bones)
-        main_offset = anim_data.main_offset
-        root_offset = anim_data.root_offset
-
-        # Carry over local transformation if there's no new keyframe.
-        # Needed for global transformation conversion to correct locations as a result of scaling.
-        matrix_basis_carry = {}
-        for pbone in arm_active.pose.bones:
-            matrix_basis_carry[pbone.name] = mathutils.Matrix()
-
-        frame_table = get_uncompressed_frame_table(anim_file, frame_count, track_count, main_offset)
-
-        root_basis_carry = mathutils.Matrix() @ mathutils.Quaternion((RMS, RMS, 0.0, 0.0)).to_matrix().to_4x4()
-        if self.bool_root_motion:
-            if root_offset:
-                root_frame_table = get_uncompressed_frame_table(anim_file, frame_count, 1, root_offset)
-            else:
-                self.report({'INFO'}, "No root motion chunk found. Skipping root motion import")
-
-        for frame in range(frame_count):
-            self.progress.resume(frame_num=frame)
-            track_table = frame_table[frame]
-            if self.bool_root_motion and root_offset:
-                root_table = root_frame_table[frame][0]
-            matrix_map_local = {}
-            scale_map = {}
-
-            # Need track_table status as dictionary for set_pose_matrices_global function.
-            truth_table = {}
-            for pbone in arm_active.pose.bones:
-                truth_table[pbone.name] = [False, False, False]
-
-            for i in range(bone_count):
-                pbone = arm_active.pose.bones[i]
-                if i in range(track_count):
-                    bone_table = track_table[i]
-                    bone_key = truth_table[pbone.name]
-                    tmp_loc, tmp_rot, tmp_scale = matrix_basis_carry[pbone.name].decompose()
-
-                    if bone_table[0]:  # Location
-                        p0, p1, p2 = bone_table[0]
-                        if self.bool_yx_skel:
-                            tmp_loc = mathutils.Vector((p2, p0, p1))
-                        else:
-                            tmp_loc = mathutils.Vector((p0, p1, p2))
-                        bone_key[0] = True
-
-                    if bone_table[1]:  # Rotation
-                        r0, r1, r2, r3 = bone_table[1]
-                        if self.bool_yx_skel:
-                            tmp_rot = mathutils.Quaternion((r3, r2, r0, r1))
-                            if not pbone.parent:
-                                tmp_rot @= mathutils.Quaternion((0.5, -0.5, -0.5, -0.5))
-                        else:
-                            tmp_rot = mathutils.Quaternion((r3, r0, r1, r2))
-                        bone_key[1] = True
-
-                    if bone_table[2]:  # Scale
-                        s0, s1, s2 = bone_table[2]
-                        if (s0, s1, s2) != (0.0, 0.0, 0.0):
-                            if self.bool_yx_skel:
-                                tmp_scale = mathutils.Vector((s2, s0, s1))
-                            else:
-                                tmp_scale = mathutils.Vector((s0, s1, s2))
-                        else:
-                            tmp_scale = mathutils.Vector((1.0, 1.0, 1.0))
-                        bone_key[2] = True
-
-                    matrix_basis_carry[pbone.name] = mathutils.Matrix.LocRotScale(tmp_loc, tmp_rot, tmp_scale)
-                    matrix = mathutils.Matrix.LocRotScale(tmp_loc, tmp_rot, mathutils.Vector((1.0, 1.0, 1.0)))
-                    matrix_map_local[pbone.name] = matrix
-                    scale_map[pbone.name] = tmp_scale
-                else:
-                    matrix_map_local.update({pbone.name: mathutils.Matrix()})
-                    scale_map.update({pbone.name: mathutils.Vector((1.0, 1.0, 1.0))})
-
-            matrix_map_global = get_matrix_map_global(arm_active, matrix_map_local, scale_map)
-            set_pose_matrices_global(arm_active, matrix_map_global, frame, truth_table=truth_table)
-
-            if self.bool_root_motion and root_offset:
-                # Always reorient for Z-up space, should work regardless if pose-space of skeleton is Y-up or Z-up
-                tmp_loc, tmp_rot, tmp_scale = root_basis_carry.decompose()
-                if root_table[0]:  # Location
-                    p0, p1, p2 = root_table[0]
-                    tmp_loc = mathutils.Vector((p0, -p2, p1))
-                    arm_active.location = tmp_loc
-                    arm_active.keyframe_insert('location', frame=frame, options=self.keyframe_rules)
-
-                if root_table[1]:  # Rotation
-                    r0, r1, r2, r3 = root_table[1]
-                    tmp_rot = mathutils.Quaternion((RMS, RMS, 0.0, 0.0))
-                    tmp_rot @= mathutils.Quaternion((r3, r0, r1, r2))
-                    arm_active.rotation_quaternion = tmp_rot
-                    arm_active.keyframe_insert('rotation_quaternion', frame=frame, options=self.keyframe_rules)
-
-                if root_table[2]:  # Scale
-                    s0, s1, s2 = root_table[2]
-                    if (s0, s1, s2) != (0.0, 0.0, 0.0):
-                        tmp_scale = mathutils.Vector((s0, s1, s2))
-                    else:
-                        tmp_scale = mathutils.Vector((1.0, 1.0, 1.0))
-                        arm_active.scale = tmp_scale
-                    arm_active.keyframe_insert('scale', frame=frame, options=self.keyframe_rules)
-
-                root_basis_carry = mathutils.Matrix.LocRotScale(tmp_loc, tmp_rot, tmp_scale)
+    def import_uncompressed(self, arm_active, anim_file, anim_data):    # TODO
+        pass
+        # frame_count = anim_data.frame_count
+        # track_count = anim_data.track_count
+        # bone_count = len(arm_active.data.bones)
+        # main_offset = anim_data.main_offset
+        # root_offset = anim_data.root_offset
+        #
+        # # Carry over local transformation if there's no new keyframe.
+        # # Needed for global transformation conversion to correct locations as a result of scaling.
+        # matrix_basis_carry = {}
+        # for pbone in arm_active.pose.bones:
+        #     matrix_basis_carry[pbone.name] = mathutils.Matrix()
+        #
+        # frame_table = get_uncompressed_frame_table(anim_file, frame_count, track_count, main_offset)
+        #
+        # root_basis_carry = mathutils.Matrix() @ mathutils.Quaternion((SINE_RMS, SINE_RMS, 0.0, 0.0)).to_matrix().to_4x4()
+        # if self.bool_root_motion:
+        #     if root_offset:
+        #         root_frame_table = get_uncompressed_frame_table(anim_file, frame_count, 1, root_offset)
+        #     else:
+        #         self.report({'INFO'}, "No root motion chunk found. Skipping root motion import")
+        #
+        # for frame in range(frame_count):
+        #     self.progress.resume(frame_num=frame)
+        #     track_table = frame_table[frame]
+        #     if self.bool_root_motion and root_offset:
+        #         root_table = root_frame_table[frame][0]
+        #     matrix_map_local = {}
+        #     scale_map = {}
+        #
+        #     # Need track_table status as dictionary for get_matrix_map_basis function.
+        #     truth_table = {}
+        #     for pbone in arm_active.pose.bones:
+        #         truth_table[pbone.name] = [False, False, False]
+        #
+        #     for i in range(bone_count):
+        #         pbone = arm_active.pose.bones[i]
+        #         if i in range(track_count):
+        #             bone_table = track_table[i]
+        #             bone_key = truth_table[pbone.name]
+        #             tmp_loc, tmp_rot, tmp_scale = matrix_basis_carry[pbone.name].decompose()
+        #
+        #             if bone_table[0]:  # Location
+        #                 p0, p1, p2 = bone_table[0]
+        #                 if self.bool_yx_skel:
+        #                     tmp_loc = mathutils.Vector((p2, p0, p1))
+        #                 else:
+        #                     tmp_loc = mathutils.Vector((p0, p1, p2))
+        #                 bone_key[0] = True
+        #
+        #             if bone_table[1]:  # Rotation
+        #                 r0, r1, r2, r3 = bone_table[1]
+        #                 if self.bool_yx_skel:
+        #                     tmp_rot = mathutils.Quaternion((r3, r2, r0, r1))
+        #                     if not pbone.parent:
+        #                         tmp_rot @= mathutils.Quaternion((0.5, -0.5, -0.5, -0.5))
+        #                 else:
+        #                     tmp_rot = mathutils.Quaternion((r3, r0, r1, r2))
+        #                 bone_key[1] = True
+        #
+        #             if bone_table[2]:  # Scale
+        #                 s0, s1, s2 = bone_table[2]
+        #                 if (s0, s1, s2) != (0.0, 0.0, 0.0):
+        #                     if self.bool_yx_skel:
+        #                         tmp_scale = mathutils.Vector((s2, s0, s1))
+        #                     else:
+        #                         tmp_scale = mathutils.Vector((s0, s1, s2))
+        #                 else:
+        #                     tmp_scale = mathutils.Vector((1.0, 1.0, 1.0))
+        #                 bone_key[2] = True
+        #
+        #             matrix_basis_carry[pbone.name] = mathutils.Matrix.LocRotScale(tmp_loc, tmp_rot, tmp_scale)
+        #             matrix = mathutils.Matrix.LocRotScale(tmp_loc, tmp_rot, mathutils.Vector((1.0, 1.0, 1.0)))
+        #             matrix_map_local[pbone.name] = matrix
+        #             scale_map[pbone.name] = tmp_scale
+        #         else:
+        #             matrix_map_local.update({pbone.name: mathutils.Matrix()})
+        #             scale_map.update({pbone.name: mathutils.Vector((1.0, 1.0, 1.0))})
+        #
+        #     matrix_map_global = get_matrix_map_global(arm_active, matrix_map_local, scale_map)
+        #     get_matrix_map_basis(arm_active, matrix_map_global, frame, truth_table=truth_table)
+        #
+        #     if self.bool_root_motion and root_offset:
+        #         # Always reorient for Z-up space, should work regardless if pose-space of skeleton is Y-up or Z-up
+        #         tmp_loc, tmp_rot, tmp_scale = root_basis_carry.decompose()
+        #         if root_table[0]:  # Location
+        #             p0, p1, p2 = root_table[0]
+        #             tmp_loc = mathutils.Vector((p0, -p2, p1))
+        #             arm_active.location = tmp_loc
+        #             arm_active.keyframe_insert('location', frame=frame)
+        #
+        #         if root_table[1]:  # Rotation
+        #             r0, r1, r2, r3 = root_table[1]
+        #             tmp_rot = mathutils.Quaternion((RMS, RMS, 0.0, 0.0))
+        #             tmp_rot @= mathutils.Quaternion((r3, r0, r1, r2))
+        #             arm_active.rotation_quaternion = tmp_rot
+        #             arm_active.keyframe_insert('rotation_quaternion', frame=frame)
+        #
+        #         if root_table[2]:  # Scale
+        #             s0, s1, s2 = root_table[2]
+        #             if (s0, s1, s2) != (0.0, 0.0, 0.0):
+        #                 tmp_scale = mathutils.Vector((s0, s1, s2))
+        #             else:
+        #                 tmp_scale = mathutils.Vector((1.0, 1.0, 1.0))
+        #                 arm_active.scale = tmp_scale
+        #             arm_active.keyframe_insert('scale', frame=frame)
+        #
+        #         root_basis_carry = mathutils.Matrix.LocRotScale(tmp_loc, tmp_rot, tmp_scale)
 
         return True
 

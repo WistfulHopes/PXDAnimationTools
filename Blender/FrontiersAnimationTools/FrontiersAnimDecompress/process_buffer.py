@@ -16,7 +16,7 @@ class ACLCompressor:
         _fields_ = [("offset", ctypes.POINTER(ctypes.c_ubyte)),
                     ("size", ctypes.c_size_t)]
 
-    path = bpy.utils.user_resource('SCRIPTS', path='Addons\\FrontiersAnimationTools\\FrontiersAnimDecompress')
+    path = bpy.utils.user_resource('EXTENSIONS', path='user_default\\FrontiersAnimationTools\\FrontiersAnimDecompress')
     name = "FrontiersAnimDecompress.dll"
 
     def __init__(self):

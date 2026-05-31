@@ -33,10 +33,11 @@ class BatchProgress:
         if name:
             self.item_name = name
 
-        if self.method == 'IMPORT':
-            status = f"{self.item_num + 1} / {self.num_files}\t{self.item_name}\t{frame_num + 1} / {self.num_frames}"
-        elif self.method == 'EXPORT':
-            status = f"{self.item_num + 1} / {self.num_files}\t{self.item_name}"
+        status = f"{self.item_num + 1} / {self.num_files}\t{self.item_name}"
+        # if self.method == 'IMPORT':
+        #     status = f"{self.item_num + 1} / {self.num_files}\t{self.item_name}\t{frame_num + 1} / {self.num_frames}"
+        # elif self.method == 'EXPORT':
+        #     status = f"{self.item_num + 1} / {self.num_files}\t{self.item_name}"
         print(' ' * self.status_len, end=f'\r{status}\r')
         self.status_len = len(status) + 32
 

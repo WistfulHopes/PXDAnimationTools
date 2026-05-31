@@ -1,0 +1,15 @@
+blender_version_min = "4.2.0"
+id = "FrontiersAnimationTools"
+license = ["SPDX:GPL-3.0-or-later"]
+maintainer = "AdelQue, WistfulHopes"
+name = "PXD Animation Tools"
+schema_version = "1.0.0"
+tagline = "UNSTABLE: Create and modify skeletal animation data (.pxd files) for Hedgehog Engine 2 titles"
+version = "2.2.0"
+type = "add-on"
+tags = ["Import-Export", "Animation"]
+platforms = ["windows-x64"]
+website = "https://github.com/WistfulHopes/PXDAnimationTools/"
+
+[permissions]
+files = "Import/export animations and skeletons to/from disk"
