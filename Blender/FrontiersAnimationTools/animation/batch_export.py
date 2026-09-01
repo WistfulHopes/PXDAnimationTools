@@ -93,7 +93,7 @@ class FrontiersAnimBatchExport(bpy.types.Operator, ExportHelper):
             # else:
                 # self.bool_compress = False
 
-            action_path = f"{base_dir}\\{action.name}.anm.pxd"
+            action_path = f"{base_dir}/{action.name}.anm.pxd"
             arm_active.animation_data.action = action
             frame_rate = action.pxd_fps
             if not anim_export(self,
