@@ -9,6 +9,7 @@ See bottom of file for struct of different byte streams
 import bpy
 import io
 import ctypes
+import sys
 
 
 class ACLCompressor:
@@ -16,11 +17,16 @@ class ACLCompressor:
         _fields_ = [("offset", ctypes.POINTER(ctypes.c_ubyte)),
                     ("size", ctypes.c_size_t)]
 
-    path = bpy.utils.user_resource('SCRIPTS', path='Addons\\FrontiersAnimationTools\\FrontiersAnimDecompress')
-    name = "FrontiersAnimDecompress.dll"
+    if sys.platform == "win32":
+        path = bpy.utils.user_resource('SCRIPTS', path='Addons\\FrontiersAnimationTools\\FrontiersAnimDecompress')
+        name = "FrontiersAnimDecompress.dll"
+    else:
+        path = bpy.utils.user_resource('SCRIPTS', path='addons/FrontiersAnimationTools/FrontiersAnimDecompress')
+        name = "FrontiersAnimDecompress.so"
 
     def __init__(self):
-        self.dll = ctypes.CDLL(f"{self.path}\\{self.name}")
+        if sys.platform == "win32": self.dll = ctypes.CDLL(f"{self.path}\\{self.name}")
+        else: self.dll = ctypes.CDLL(f"{self.path}/{self.name}")
         self.dll.decompress.restype = self.MemoryBuffer
         self.dll.compress.restype = self.MemoryBuffer
 

@@ -13,6 +13,12 @@
 #include "acl/decompression/decompress.h"
 #include "acl/decompression/decompression_settings.h"
 
+#if defined(_WIN32) || defined(_WIN64)
+#define ACL_EXPORT __declspec(dllexport)
+#else
+#define ACL_EXPORT __attribute__((visibility("default")))
+#endif
+
 using namespace acl;
 
 struct vector
@@ -68,7 +74,7 @@ struct python_buffer
 	size_t data_buffer_size;
 };
 
-extern "C" __declspec(dllexport) python_buffer decompress(const char* buffer_in)
+extern "C" ACL_EXPORT python_buffer decompress(const char* buffer_in)
 {
 	decompression_context<default_transform_decompression_settings> context;
 	error_result result;
@@ -122,7 +128,7 @@ extern "C" __declspec(dllexport) python_buffer decompress(const char* buffer_in)
 
 	for (uint32_t i = 0; i < output.all_tracks.size(); i++)
 	{
-		data_string.write((char*)output.all_tracks[i].data(), sizeof rtm::qvvf * output.all_tracks[i].size());
+		data_string.write((char*)output.all_tracks[i].data(), sizeof(rtm::qvvf) * output.all_tracks[i].size());
 	}
 
 	std::string binary_string = data_string.str();
@@ -140,7 +146,11 @@ extern "C" __declspec(dllexport) python_buffer decompress(const char* buffer_in)
 	return python_out;
 }
 
-#pragma optimize("", off) 
+#if defined(_MSC_VER)
+#pragma optimize("", off)
+#else
+#pragma GCC optimize("O0")
+#endif
 track_array_qvvf load_tracks(const char*& buffer, ansi_allocator& allocator, uint32_t sample_count, float sample_rate, uint32_t track_count)
 {
 	track_array_qvvf raw_track_list(allocator, track_count);
@@ -150,7 +160,7 @@ track_array_qvvf load_tracks(const char*& buffer, ansi_allocator& allocator, uin
 		std::vector<rtm::qvvf> track;
 		for (uint32_t j = 0; j < sample_count; j++)
 		{
-			uint32_t file_pos = 0x10 + j * track_count * sizeof rtm::qvvf + i * sizeof rtm::qvvf;
+			uint32_t file_pos = 0x10 + j * track_count * sizeof(rtm::qvvf) + i * sizeof(rtm::qvvf);
 			rtm::qvvf transform = *(rtm::qvvf*)&buffer[file_pos];
 			track.push_back(transform);
 		}
@@ -168,8 +178,13 @@ track_array_qvvf load_tracks(const char*& buffer, ansi_allocator& allocator, uin
 	}
 	return raw_track_list;
 }
-#pragma optimize("", on) 
-extern "C" __declspec(dllexport) python_buffer compress(const char* buffer_in)
+#if defined(_MSC_VER)
+#pragma optimize("", on)
+#else
+#pragma GCC reset_options
+#endif
+
+extern "C" ACL_EXPORT python_buffer compress(const char* buffer_in)
 {
 	ansi_allocator allocator;
 
@@ -203,12 +218,12 @@ extern "C" __declspec(dllexport) python_buffer compress(const char* buffer_in)
 		fail.data_buffer_size = 0;
 		return fail;
 	}
-	
+
 	// String to hold data instead of file
 	std::ostringstream data_string(std::ios::binary);
 
 	data_string.write((char*)out_compressed_tracks, out_compressed_tracks->get_size());
-	
+
 	std::string binary_string = data_string.str();
 	size_t buffer_out_size = binary_string.size();
 
@@ -225,4 +240,3 @@ extern "C" __declspec(dllexport) python_buffer compress(const char* buffer_in)
 
 	return python_out;
 }
-
